@@ -1,0 +1,10 @@
+name: Deprecated iOS IPA workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deprecated:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Use .github/workflows/build_ios.yml instead."

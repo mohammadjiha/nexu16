@@ -1,0 +1,182 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Configure Flutter features
+        run: |
+          flutter config --no-enable-swift-package-manager
+          # objective_c (transitive dep) requires the dart/native code-assets
+          # feature; it must be ENABLED or `flutter build ios` fails in the
+          # PhaseScriptExecution (dart_build) step.
+          flutter config --enable-native-assets
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Patch camera_avfoundation
+        run: |
+          find "$HOME/.pub-cache" -path "*/camera_avfoundation*/DefaultCamera.swift" | while read f; do
+            echo "Patching: $f"
+            sed -i '' \
+              's/AVCaptureSession\.wasInterruptedNotification/NSNotification.Name("AVCaptureSessionWasInterruptedNotification")/g' \
+              "$f"
+            sed -i '' \
+              's/AVCaptureSession\.runtimeErrorNotification/NSNotification.Name("AVCaptureSessionRuntimeErrorNotification")/g' \
+              "$f"
+            echo "Patched"
+          done
+
+      - name: Build iOS app unsigned
+        env:
+          CODE_SIGNING_ALLOWED: "NO"
+          CODE_SIGNING_REQUIRED: "NO"
+          CODE_SIGN_IDENTITY: ""
+          EXPANDED_CODE_SIGN_IDENTITY: ""
+          DEVELOPMENT_TEAM: ""
+          PROVISIONING_PROFILE_SPECIFIER: ""
+          ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+          CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES: "YES"
+          COMPILER_INDEX_STORE_ENABLE: "NO"
+        run: |
+          set -o pipefail
+          flutter --version
+
+          set +e
+          flutter build ios --no-codesign 2>&1 | tee build_ios.log
+          flutter_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$flutter_status" -eq 0 ]; then
+            echo "Flutter build completed successfully."
+          else
+            echo "Flutter exited with status $flutter_status; looking for a built Runner.app before failing."
+          fi
+
+          runner_info="$(find build -path '*/Runner.app/Info.plist' -type f -print -quit 2>/dev/null || true)"
+          runner_app=""
+          if [ -n "$runner_info" ]; then
+            runner_app="$(dirname "$runner_info")"
+          fi
+
+          if [ -z "$runner_app" ]; then
+            echo "Runner.app was not found after flutter build; running unsigned xcodebuild fallback."
+            cd ios
+            pod install
+
+            set +e
+            xcodebuild build \
+              -workspace Runner.xcworkspace \
+              -scheme Runner \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath ../build/ios_derived_data \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              EXPANDED_CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="" \
+              PROVISIONING_PROFILE_SPECIFIER="" \
+              ENABLE_USER_SCRIPT_SANDBOXING=NO \
+              CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES=YES \
+              COMPILER_INDEX_STORE_ENABLE=NO \
+              2>&1 | tee -a ../build_ios.log
+            xcode_status=${PIPESTATUS[0]}
+            set -e
+            cd ..
+
+            if [ "$xcode_status" -ne 0 ]; then
+              echo "xcodebuild exited with status $xcode_status; checking whether Runner.app was still produced."
+            fi
+
+            runner_info="$(find build -path '*/Runner.app/Info.plist' -type f -print -quit 2>/dev/null || true)"
+            if [ -n "$runner_info" ]; then
+              runner_app="$(dirname "$runner_info")"
+            fi
+          fi
+
+          if [ -z "$runner_app" ]; then
+            echo "Valid Runner.app with Info.plist not found. Build outputs:"
+            find build -maxdepth 6 -type d -print 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Using Runner.app at $runner_app"
+          if [ "$runner_app" != "build/ios/iphoneos/Runner.app" ]; then
+            rm -rf build/ios/iphoneos/Runner.app
+            mkdir -p build/ios/iphoneos
+            ditto "$runner_app" build/ios/iphoneos/Runner.app
+          fi
+
+          if [ ! -f "build/ios/iphoneos/Runner.app/Info.plist" ]; then
+            echo "Normalized Runner.app is missing Info.plist"
+            find build/ios/iphoneos/Runner.app -maxdepth 3 -print 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Show real build errors on failure
+        if: failure()
+        run: |
+          echo "================ ERROR LINES ================"
+          grep -nE "error:|fatal error|ld: |Undefined symbol|clang:|The following build commands failed|Swift Compiler Error" build_ios.log || echo "No explicit 'error:' lines found."
+          echo "================ LAST 120 LINES ============="
+          tail -n 120 build_ios.log
+
+      - name: Upload iOS build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: build_ios.log
+
+      - name: Verify Runner.app exists
+        run: |
+          if [ ! -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "Runner.app not found"
+            exit 1
+          fi
+          if [ ! -f "build/ios/iphoneos/Runner.app/Info.plist" ]; then
+            echo "Runner.app/Info.plist not found"
+            exit 1
+          fi
+          echo "Runner.app: $(du -sh build/ios/iphoneos/Runner.app | cut -f1)"
+          /usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" build/ios/iphoneos/Runner.app/Info.plist
+
+      - name: Package into IPA
+        run: |
+          rm -rf build/ios/ipa_payload build/ios/iphoneos/NEXUS-fixed.ipa
+          mkdir -p build/ios/ipa_payload/Payload
+          ditto build/ios/iphoneos/Runner.app build/ios/ipa_payload/Payload/Runner.app
+
+          test -f build/ios/ipa_payload/Payload/Runner.app/Info.plist
+
+          cd build/ios/ipa_payload
+          zip -qry ../iphoneos/NEXUS-fixed.ipa Payload
+          cd -
+
+          unzip -l build/ios/iphoneos/NEXUS-fixed.ipa | grep -q "Payload/Runner.app/Info.plist"
+          echo "IPA: $(du -sh build/ios/iphoneos/NEXUS-fixed.ipa | cut -f1)"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUS-iOS
+          path: build/ios/iphoneos/NEXUS-fixed.ipa
+          retention-days: 7
