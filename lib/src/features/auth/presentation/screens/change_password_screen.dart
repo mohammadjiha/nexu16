@@ -70,10 +70,15 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
       // 1. Update Firebase Auth password
       await user.updatePassword(_newPassCtrl.text.trim());
 
-      // 2. Clear the temporary-password flag in Firestore
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).update(
-        {'temporaryPasswordSet': false},
-      );
+      // 2. Clear the temporary-password flag AND the stored plaintext value.
+      // The player just set their own password, so whatever is stored here
+      // is now wrong — leaving it would make the admin panel keep showing a
+      // stale password forever. Clearing it flips the admin UI back to "no
+      // password on file" instead of a wrong one.
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
+        'temporaryPasswordSet': false,
+        'temporaryPassword': FieldValue.delete(),
+      });
 
       completeRequiredPasswordChange();
 

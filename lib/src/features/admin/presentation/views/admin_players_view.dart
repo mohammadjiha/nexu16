@@ -1593,23 +1593,33 @@ class _PlayerDetailSheetState extends ConsumerState<_PlayerDetailSheet> {
     final realTotal = (p.totalAmount ?? 0.0) > 0 ? p.totalAmount! : realPaid;
     final realRemaining = (realTotal - realPaid).clamp(0.0, double.infinity);
 
+    // Professional bottom-sheet pattern: DraggableScrollableSheet. It opens
+    // at a sensible default height, the user can drag the handle to expand
+    // it toward the full screen or shrink it back down, and its scroll
+    // position and available height are handled by one single mechanism
+    // (its own internal ScrollController) instead of manually-guessed fixed
+    // percentages fighting with the keyboard. Wrapped in a Scaffold so its
+    // SnackBars (via _sheetMessengerKey) render ON TOP of the sheet's own
+    // content instead of behind it — keep that part as-is.
     return ScaffoldMessenger(
       key: _sheetMessengerKey,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: Container(
-      constraints:
-          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
-      padding: EdgeInsets.fromLTRB(5.w, 2.h, 5.w,
-          MediaQuery.of(context).viewInsets.bottom + 4.h),
+        body: DraggableScrollableSheet(
+          initialChildSize: 0.6,
+          minChildSize: 0.4,
+          maxChildSize: 0.95,
+          builder: (context, scrollController) {
+            return Container(
+      padding: EdgeInsets.fromLTRB(5.w, 2.h, 5.w, 4.h),
       decoration: BoxDecoration(
         color: const Color(0xFF1C1C1E),
         borderRadius:
             BorderRadius.vertical(top: Radius.circular(5.w)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.max,
-        children: [
+      child: SingleChildScrollView(
+        controller: scrollController,
+        child: Column(children: [
           // Drag handle
           Container(
             width: 12.w,
@@ -1619,8 +1629,6 @@ class _PlayerDetailSheetState extends ConsumerState<_PlayerDetailSheet> {
                 color: Colors.white24,
                 borderRadius: BorderRadius.circular(10)),
           ),
-
-          Expanded(child: SingleChildScrollView(child: Column(children: [
 
           // Header
           Row(
@@ -1861,9 +1869,10 @@ class _PlayerDetailSheetState extends ConsumerState<_PlayerDetailSheet> {
           SizedBox(height: 2.h),
           _buildAdminPaymentHistory(p),
           SizedBox(height: 1.h),
-
-          ])))],  // close inner Column, SingleChildScrollView, Expanded, outer Column children
+        ]),
       ),
+    );
+          },
         ),
       ),
     );
@@ -2032,7 +2041,13 @@ class _PlayerDetailSheetState extends ConsumerState<_PlayerDetailSheet> {
       final result =
           await FirebaseFunctions.instanceFor(region: 'us-central1')
               .httpsCallable('updatePlayerPassword')
-              .call({'targetUid': p.uid, 'newPassword': newPw});
+              .call({
+        'targetUid': p.uid,
+        'newPassword': newPw,
+        // Auto-generated placeholder — player must still set their own on
+        // first login.
+        'temporary': true,
+      });
       final authEmail =
           (result.data as Map?)?['authEmail'] as String? ?? p.email;
       if (context.mounted) {
@@ -2351,7 +2366,7 @@ class _PlayerDetailSheetState extends ConsumerState<_PlayerDetailSheet> {
               controller: _resetPwCtrl,
               style: TextStyle(color: Colors.white, fontSize: 14.sp),
               decoration: InputDecoration(
-                hintText: 'اكتب كلمة مرور مؤقتة جديدة',
+                hintText: 'اكتب كلمة مرور جديدة (تصير كلمة المرور الفعلية)',
                 hintStyle:
                     TextStyle(color: Colors.white30, fontSize: 13.sp),
                 filled: true,
@@ -2393,6 +2408,10 @@ class _PlayerDetailSheetState extends ConsumerState<_PlayerDetailSheet> {
                             .call({
                           'targetUid': p.uid,
                           'newPassword': newPw,
+                          // Admin deliberately chose this exact password — it
+                          // should just work at login, no forced follow-up
+                          // change that would silently overwrite it.
+                          'temporary': false,
                         });
 
                         // authEmail returned from function = the real login email
@@ -3105,11 +3124,15 @@ class _UpdateSubscriptionSheetState
     final effectiveEnd = _endDate ??
         DateTime(DateTime.now().year, DateTime.now().month + 1, DateTime.now().day);
 
+    // showModalBottomSheet's own route already shifts this whole sheet up by
+    // the keyboard height (MediaQuery.viewInsets.bottom) automatically — that
+    // happens once, outside this widget. Also subtracting/adding it here
+    // double-compensates and was starving the content area to nothing when
+    // the keyboard was open. Plain fixed sizing/padding is correct.
     return Container(
       constraints:
           BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.88),
-      padding: EdgeInsets.fromLTRB(5.w, 2.h, 5.w,
-          MediaQuery.of(context).viewInsets.bottom + 4.h),
+      padding: EdgeInsets.fromLTRB(5.w, 2.h, 5.w, 4.h),
       decoration: BoxDecoration(
         color: const Color(0xFF1C1C1E),
         borderRadius: BorderRadius.vertical(top: Radius.circular(5.w)),
@@ -4161,11 +4184,13 @@ class _AddPlayerSheetState extends ConsumerState<_AddPlayerSheet> {
 
   @override
   Widget build(BuildContext context) {
+    // showModalBottomSheet's own route already shifts this whole sheet up by
+    // the keyboard height automatically — no manual viewInsets compensation
+    // needed here (that was double-counting and collapsing the content area
+    // to nothing when the keyboard opened).
     return Container(
       constraints:
           BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.95),
-      padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom),
       decoration: const BoxDecoration(
         color: Color(0xFF1C1C1E),
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),

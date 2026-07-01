@@ -453,6 +453,11 @@ exports.updatePlayerPassword = functions
   .runWith({ timeoutSeconds: 30 })
   .https.onCall(async (data, context) => {
     const { targetUid, newPassword, callerUid } = data;
+    // Default true to preserve old behavior for existing callers that don't
+    // pass this — the "quick random-generate" reset flow SHOULD still force
+    // the player to pick their own password on next login. Only the "admin
+    // types a specific final password" flow passes temporary:false.
+    const isTemporary = data && data.temporary === false ? false : true;
 
     if (!targetUid || !newPassword || newPassword.length < 6) {
       throw new functions.https.HttpsError(
@@ -507,10 +512,15 @@ exports.updatePlayerPassword = functions
       const updatedUser = await admin.auth().getUser(targetUid);
       console.log(`[updatePlayerPassword] ✅ Auth updated for uid=${targetUid}, email=${updatedUser.email}`);
 
-      // Save auth email + new password to Firestore so Flutter shows the correct login email
+      // Save auth email + new password to Firestore so Flutter shows the correct login email.
+      // temporaryPasswordSet controls whether the router forces the player into
+      // /change_password on next login — only true for the "quick random
+      // password" reset flow. When the admin deliberately types a specific
+      // password (temporary:false), it should just work at login, no forced
+      // follow-up change that would silently overwrite what the admin set.
       await db.collection("users").doc(targetUid).update({
         temporaryPassword: newPassword,
-        temporaryPasswordSet: true,
+        temporaryPasswordSet: isTemporary,
         email: updatedUser.email,
         authEmail: updatedUser.email,   // the real Firebase Auth login email
         updatedAt: FieldValue.serverTimestamp(),
@@ -1382,6 +1392,20 @@ exports.resetPasswordViaPhone = functions
 
     await admin.auth().updateUser(uid, { password: newPassword });
     console.log(`[resetPasswordViaPhone] Password reset: uid=${uid} phone=${verifiedPhone}`);
+
+    // The player just set their own password — any admin-visible
+    // temporaryPassword on file is now stale (wrong) and must never be shown
+    // again. Clear it so the admin panel correctly falls back to "no
+    // password on file" instead of silently displaying an outdated value.
+    try {
+      await db.collection("users").doc(uid).update({
+        temporaryPassword: FieldValue.delete(),
+        temporaryPasswordSet: false,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn("[resetPasswordViaPhone] stale temp-password cleanup skipped:", e.message);
+    }
 
     const email = recoveryData.email || "";
     return { success: true, email };
