@@ -529,6 +529,23 @@ class AuthRepository {
       role: profile.role,
     );
 
+    // The phone write above always succeeds (users can write their own
+    // /users/{uid} doc), but /accountRecovery is locked to admins/coaches by
+    // firestore.rules — a plain player could never legally write their own
+    // new mapping there directly. Sync it server-side (Admin SDK bypasses
+    // the rule) so phone-based password recovery keeps working for whatever
+    // number the user just switched to. Non-fatal: the profile save itself
+    // already succeeded, so a sync hiccup here must never block the user.
+    if (profile.phone != null && profile.phone!.trim().isNotEmpty) {
+      try {
+        await FirebaseFunctions.instanceFor(region: 'us-central1')
+            .httpsCallable('syncMyAccountRecovery')
+            .call();
+      } catch (e) {
+        debugPrint('syncMyAccountRecovery failed (non-fatal): $e');
+      }
+    }
+
     final displayName = [
       profile.firstName?.trim(),
       profile.lastName?.trim(),

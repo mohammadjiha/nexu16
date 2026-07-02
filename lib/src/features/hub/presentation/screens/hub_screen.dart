@@ -9,6 +9,7 @@ import '../../../../features/coaching/presentation/screens/human_coach_chat_scre
 import '../../../../features/gym/presentation/screens/exercises_screen.dart';
 import '../../../../features/nutrition/presentation/screens/ai_food_scanner_screen.dart';
 import '../../../../features/profile/presentation/screens/profile_screen.dart';
+import '../../../../features/shop/presentation/screens/nexus_shop_screen.dart';
 import '../../../auth/data/auth_repository.dart';
 
 class HubScreen extends ConsumerWidget {
@@ -109,16 +110,8 @@ class HubScreen extends ConsumerWidget {
                       subtitle: 'nexus_shop_desc'.tr(context),
                       icon: Icons.shopping_bag_rounded,
                       color: const Color(0xFFFF9500),
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('shop_coming_soon'.tr(context)),
-                            backgroundColor: const Color(0xFF1C1C1E),
-                            behavior: SnackBarBehavior.floating,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(3.w)),
-                          ),
-                        );
-                      },
+                      onTap: () => Navigator.push(context,
+                          MaterialPageRoute(builder: (_) => const NexusShopScreen())),
                     ),
                   ),
                 ],

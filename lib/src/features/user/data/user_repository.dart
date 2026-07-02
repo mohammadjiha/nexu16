@@ -6,6 +6,21 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_constants.dart';
 import '../models/user_model.dart';
 
+// Normalizes to E.164 Jordan format (+962XXXXXXXXX) before storage — see
+// normalizePhoneForStorage() in user_model.dart for why this matters.
+// Duplicated here (not imported) to keep this file usable without pulling
+// in the model in call sites that build their own update maps directly.
+String? _normalizeRepoPhone(String? input) {
+  if (input == null) return null;
+  var v = input.trim().replaceAll(RegExp(r'[\s()-]'), '');
+  if (v.isEmpty) return null;
+  if (v.startsWith('00')) v = '+${v.substring(2)}';
+  if (v.startsWith('+')) return v;
+  if (v.startsWith('962')) return '+$v';
+  if (v.startsWith('0')) return '+962${v.substring(1)}';
+  return '+962$v';
+}
+
 final firestoreProvider = Provider<FirebaseFirestore>((ref) {
   return FirebaseFirestore.instance;
 });
@@ -87,7 +102,7 @@ class UserRepository {
         data['lastName'] = user.lastName!.trim();
       }
       if (user.phone != null && user.phone!.trim().isNotEmpty) {
-        data['phone'] = user.phone!.trim();
+        data['phone'] = _normalizeRepoPhone(user.phone);
       }
       if (user.gymId != null && user.gymId!.trim().isNotEmpty) {
         data['gymId'] = user.gymId!.trim();
@@ -132,7 +147,7 @@ class UserRepository {
         updates['lastName'] = lastName.trim();
       }
       if (phone != null && phone.trim().isNotEmpty) {
-        updates['phone'] = phone.trim();
+        updates['phone'] = _normalizeRepoPhone(phone);
       }
       if (gymId != null && gymId.trim().isNotEmpty) {
         updates['gymId'] = gymId.trim();

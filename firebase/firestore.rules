@@ -123,12 +123,20 @@ service cloud.firestore {
     }
 
     // Read + lightweight write (notifications, metrics, payments) — includes coach.
+    // Checks BOTH 'SuperAdmin' and 'super_admin' — the Dart client's
+    // canonical role constant (lib/src/core/utils/role_utils.dart:
+    // AppRole.superAdmin) is 'super_admin', but earlier rule functions in
+    // this file only ever checked 'SuperAdmin', so a real super-admin
+    // account (role: 'super_admin') failed canManageGym()/canAdminGym()
+    // entirely — same defensive both-forms pattern isSuperAdmin() already
+    // uses below.
     function canManageGym() {
       return signedIn() &&
         (currentUserRole() == 'owner' ||
          currentUserRole() == 'admin' ||
          currentUserRole() == 'coach' ||
-         currentUserRole() == 'SuperAdmin');
+         currentUserRole() == 'SuperAdmin' ||
+         currentUserRole() == 'super_admin');
     }
 
     // Sensitive write operations (gym settings, plans, expenses, invite list,
@@ -137,7 +145,8 @@ service cloud.firestore {
       return signedIn() &&
         (currentUserRole() == 'owner' ||
          currentUserRole() == 'admin' ||
-         currentUserRole() == 'SuperAdmin');
+         currentUserRole() == 'SuperAdmin' ||
+         currentUserRole() == 'super_admin');
     }
 
     function isSuperAdmin() {
@@ -500,6 +509,27 @@ service cloud.firestore {
         allow read, write: if signedIn() && request.auth.uid == userId;
         allow read: if canManageGym() && userGymId(userId) == currentUserGymId();
       }
+    }
+
+    // ── Nexus Shop ──────────────────────────────────────────────────────────
+    // Central catalog (not gym-scoped) — Super Admin manages products,
+    // any signed-in user (player/coach/admin) can browse them.
+    match /shopProducts/{productId} {
+      allow read: if signedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // Orders are only ever created/paid-for via the createShopPayment /
+    // verifyShopPayment Cloud Functions (Admin SDK — bypasses these rules)
+    // so stock decrements and payment verification happen atomically and
+    // can't be spoofed from the client. Same for marking pickup — that goes
+    // through markShopOrderPickedUp so we can verify the caller actually
+    // manages the order's gym before flipping its status.
+    match /shopOrders/{orderId} {
+      allow read: if isSuperAdmin();
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow read: if canManageGym() && resource.data.gymId == currentUserGymId();
+      allow write: if isSuperAdmin();
     }
 
     // Login brute-force counters — written only by the checkLoginLock /

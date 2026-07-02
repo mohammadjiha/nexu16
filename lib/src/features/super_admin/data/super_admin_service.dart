@@ -41,6 +41,17 @@ class SuperAdminService {
     return ts.substring(ts.length - 6);
   }
 
+  String _normalizePhone(String input) {
+    var v = input.trim();
+    if (v.startsWith('+')) return v;
+    v = v.replaceAll(RegExp(r'\D'), '');
+    if (v.startsWith('0')) return '+962${v.substring(1)}';
+    if (v.startsWith('962')) return '+$v';
+    return '+962$v';
+  }
+
+  String _phoneKey(String phone) => phone.replaceAll(RegExp(r'\D'), '');
+
   // ── Create Firebase Auth user via secondary app ───────────────────────────
   // Uses a secondary FirebaseApp instance so the current super admin session
   // is not affected (createUserWithEmailAndPassword would otherwise sign out
@@ -88,6 +99,8 @@ class SuperAdminService {
     required String superAdminUid,
   }) async {
     final normalizedEmail = adminEmail.trim().toLowerCase();
+    final normalizedPhone =
+        adminPhone.trim().isEmpty ? '' : _normalizePhone(adminPhone.trim());
     final displayName =
         '${adminFirstName.trim()} ${adminLastName.trim()}'.trim();
 
@@ -130,7 +143,7 @@ class SuperAdminService {
       'email': normalizedEmail,
       'firstName': adminFirstName.trim(),
       'lastName': adminLastName.trim(),
-      'phone': adminPhone.trim(),
+      'phone': normalizedPhone,
       'gymId': gymId,
       'gymCode': gymId,
       'role': 'owner',
@@ -153,7 +166,7 @@ class SuperAdminService {
       'status': 'active',
       'firstName': adminFirstName.trim(),
       'lastName': adminLastName.trim(),
-      'phone': adminPhone.trim(),
+      'phone': normalizedPhone,
       'addedBy': superAdminUid,
       'addedAt': FieldValue.serverTimestamp(),
     });
@@ -174,6 +187,22 @@ class SuperAdminService {
       'joinedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
+
+    // 6. accountRecovery/{phoneKey} — enables phone-based password recovery
+    // for the new owner, same as coaches/players get on creation. Without
+    // this, gym owners created here have never had phone recovery working
+    // at all since account creation.
+    if (normalizedPhone.isNotEmpty) {
+      final recoveryKey = _phoneKey(normalizedPhone);
+      await _db.collection('accountRecovery').doc(recoveryKey).set({
+        'uid': uid,
+        'email': normalizedEmail,
+        'phone': normalizedPhone,
+        'gymId': gymId,
+        'role': 'owner',
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
 
     return GymCreationResult(
       gymId: gymId,

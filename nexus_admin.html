@@ -1056,6 +1056,55 @@ const db       = getFirestore(app);
 const appSec   = initializeApp(firebaseConfig,'secondary');
 const authSec  = getAuth(appSec);
 
+// ── Phone-based account recovery sync ──────────────────────────────────────
+// This web admin tool edits /users/{uid} directly, same as the Flutter app's
+// admin/coach screens do — but until now it never touched
+// /accountRecovery/{phoneKey} at all, the lookup table forgot-password-via-
+// phone reads from. So any user created or edited from HERE had phone-based
+// password recovery silently broken (new number never registered, old
+// number's stale entry never cleaned up) — the exact same bug fixed in the
+// Flutter app's admin_repository.dart / super_admin_service.dart, just in a
+// separate codebase that needed the same fix independently.
+function _normalizePhone(input) {
+  let v = String(input || '').trim();
+  if (!v) return '';
+  if (v.startsWith('+')) return v;
+  v = v.replace(/\D/g, '');
+  if (!v) return '';
+  if (v.startsWith('0')) return '+962' + v.substring(1);
+  if (v.startsWith('962')) return '+' + v;
+  return '+962' + v;
+}
+function _phoneKey(phone) {
+  return String(phone || '').replace(/\D/g, '');
+}
+// Keeps accountRecovery in sync for one user: deletes the stale entry under
+// the old phone key (if the number changed), and writes/refreshes the entry
+// under the new one. Guards against silently overwriting a mapping that
+// belongs to a different uid — throws instead so the caller can surface it.
+async function _syncAccountRecovery(uid, newPhoneRaw, oldPhoneRaw, email, gymId, role) {
+  const newPhone = _normalizePhone(newPhoneRaw);
+  const oldPhone = _normalizePhone(oldPhoneRaw);
+  const newKey = newPhone ? _phoneKey(newPhone) : null;
+  const oldKey = oldPhone ? _phoneKey(oldPhone) : null;
+  if (newKey === oldKey) return; // unchanged, nothing to do
+
+  if (oldKey) {
+    await deleteDoc(doc(db, 'accountRecovery', oldKey)).catch(() => {});
+  }
+  if (newKey) {
+    const existing = await getDoc(doc(db, 'accountRecovery', newKey));
+    if (existing.exists() && existing.data().uid !== uid) {
+      throw new Error('هذا الرقم مرتبط بحساب آخر بالفعل.');
+    }
+    await setDoc(doc(db, 'accountRecovery', newKey), {
+      uid, email: (email || '').trim().toLowerCase(),
+      phone: newPhone, gymId: gymId || '', role: role || 'player',
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+  }
+}
+
 // ── State ──
 let currentUser     = null;
 let allGyms         = [];
@@ -1571,7 +1620,7 @@ async function saveUser() {
   const data={
     firstName:       document.getElementById('eu-firstname').value.trim(),
     lastName:        document.getElementById('eu-lastname').value.trim(),
-    phone:           document.getElementById('eu-phone').value.trim()||null,
+    phone:           document.getElementById('eu-phone').value.trim() ? _normalizePhone(document.getElementById('eu-phone').value.trim()) : null,
     role:            document.getElementById('eu-role').value,
     gymId,gymCode:   gymId,
     isActive:        document.getElementById('eu-active').checked,
@@ -1605,8 +1654,18 @@ async function saveUser() {
   const e=document.getElementById('eu-subend').value;
   if(s) data.subscriptionStart=Timestamp.fromDate(new Date(s));
   if(e) data.subscriptionEnd  =Timestamp.fromDate(new Date(e));
+  const _oldUserForRecovery=allUsers.find(u=>u.uid===uid);
+  const _oldPhoneForRecovery=_oldUserForRecovery?.phone||'';
   try{
     await updateDoc(doc(db,'users',uid),data);
+    // Keep phone-based password recovery in sync — delete the stale old-
+    // phone entry (if the number changed) and write/refresh the new one.
+    await _syncAccountRecovery(
+      uid, data.phone||'', _oldPhoneForRecovery,
+      _oldUserForRecovery?.email||'', gymId, data.role||_oldUserForRecovery?.role,
+    ).catch(err=>{
+      showToast('⚠️ تحديث المستخدم نجح لكن ربط الهاتف فشل: '+err.message,'error');
+    });
     // Sync name/phone to memberEmails allowlist
     if(gymId){
       const user=allUsers.find(u=>u.uid===uid);
@@ -1876,7 +1935,8 @@ async function addUser() {
   const lastName  = document.getElementById('au-lastname').value.trim();
   const email     = document.getElementById('au-email').value.trim().toLowerCase();
   const password  = document.getElementById('au-password').value.trim();
-  const phone     = document.getElementById('au-phone').value.trim();
+  const phoneRaw  = document.getElementById('au-phone').value.trim();
+  const phone     = phoneRaw ? _normalizePhone(phoneRaw) : '';
   const dob       = document.getElementById('au-dob').value;
   const role      = document.getElementById('au-role').value;
   const gymId     = document.getElementById('au-gymid').value;
@@ -2045,6 +2105,11 @@ async function addUser() {
     });
 
     await batch.commit();
+
+    // Register phone for password recovery (forgot-password-via-phone lookup)
+    await _syncAccountRecovery(uid, phone || '', '', email, gymId, role).catch(err => {
+      showToast('⚠️ تم إنشاء المستخدم لكن ربط الهاتف فشل: ' + err.message, 'error');
+    });
 
     // 4. Add payment record if amount paid > 0
     if (paidAmt > 0) {
@@ -2990,7 +3055,8 @@ async function createGym() {
   const firstName=document.getElementById('f-first').value.trim();
   const lastName =document.getElementById('f-last').value.trim();
   const email   =document.getElementById('f-email').value.trim().toLowerCase();
-  const phone   =document.getElementById('f-phone').value.trim();
+  const phoneRaw=document.getElementById('f-phone').value.trim();
+  const phone   =phoneRaw?_normalizePhone(phoneRaw):'';
   document.getElementById('create-error').style.display='none';
   if(!gymName||!gymId||!firstName||!lastName||!email||!phone){
     document.getElementById('create-error').textContent='أكمل جميع الحقول';
@@ -3021,6 +3087,8 @@ async function createGym() {
     await setDoc(doc(db,'gyms',gymId,'members',uid),{
       uid,email,gymId,role:'owner',displayName:`${firstName} ${lastName}`,
       status:'active',joinedAt:serverTimestamp(),updatedAt:serverTimestamp()});
+    // Register phone for password recovery (forgot-password-via-phone lookup)
+    await _syncAccountRecovery(uid, phone||'', '', email, gymId, 'owner').catch(()=>{});
     lastResult={gymName,gymId,email,password};
     document.getElementById('s-gym-name').textContent=gymName;
     document.getElementById('s-gym-id').textContent  =gymId;

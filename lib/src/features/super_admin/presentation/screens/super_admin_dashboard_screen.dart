@@ -8,6 +8,7 @@ import '../../data/super_admin_service.dart';
 import 'create_gym_screen.dart';
 import 'super_admin_gym_detail_screen.dart';
 import 'super_admin_sent_messages_screen.dart';
+import 'shop_products_screen.dart';
 import '../../../payment/super_admin_invoices_screen.dart';
 
 class SuperAdminDashboardScreen extends ConsumerWidget {
@@ -92,7 +93,11 @@ class SuperAdminDashboardScreen extends ConsumerWidget {
               ),
             ],
           ),
-          Row(
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              child: Row(
             children: [
               GestureDetector(
                 onTap: () => _showBroadcastSheet(context, ref),
@@ -187,6 +192,39 @@ class SuperAdminDashboardScreen extends ConsumerWidget {
                 ),
               ),
               SizedBox(width: 2.w),
+              // Shop products button
+              GestureDetector(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ShopProductsScreen(),
+                  ),
+                ),
+                child: Container(
+                  padding: EdgeInsets.symmetric(
+                      horizontal: 3.w, vertical: 1.h),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF9500).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(2.w),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.shopping_bag_rounded,
+                          color: const Color(0xFFFF9500),
+                          size: 11.sp),
+                      SizedBox(width: 1.w),
+                      Text(
+                        'متجر Nexus',
+                        style: TextStyle(
+                            fontSize: 9.sp,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFFFF9500)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              SizedBox(width: 2.w),
               GestureDetector(
                 onTap: () => ref.read(authRepositoryProvider).signOut(),
                 child: Container(
@@ -203,6 +241,8 @@ class SuperAdminDashboardScreen extends ConsumerWidget {
                 ),
               ),
             ],
+          ),
+            ),
           ),
         ],
       ),

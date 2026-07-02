@@ -1,6 +1,25 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/cupertino.dart';
 
+// Normalizes any phone number to E.164 Jordan format (+962XXXXXXXXX) before
+// it's ever persisted. Without this, numbers get stored in whatever raw
+// shape the user/admin typed them ("0791234567", "791234567",
+// "+962791234567", ...), which silently breaks forgot-password-via-phone
+// (the Cloud Function looks up accountRecovery by a digits-only key derived
+// from the *verified* E.164 Auth phone, so a raw/differently-formatted
+// stored number produces a mismatching key). Called from UserModel.toMap()
+// so every write path that serializes through the model gets this for free.
+String? normalizePhoneForStorage(String? input) {
+  if (input == null) return null;
+  var v = input.trim().replaceAll(RegExp(r'[\s()-]'), '');
+  if (v.isEmpty) return null;
+  if (v.startsWith('00')) v = '+${v.substring(2)}';
+  if (v.startsWith('+')) return v;
+  if (v.startsWith('962')) return '+$v';
+  if (v.startsWith('0')) return '+962${v.substring(1)}';
+  return '+962$v';
+}
+
 class UserModel {
   final String uid;
   final String email;
@@ -136,7 +155,7 @@ class UserModel {
     'email': email,
     'firstName': firstName,
     'lastName': lastName,
-    'phone': phone,
+    'phone': normalizePhoneForStorage(phone),
     'gymId': gymId,
     'gymCode': gymCode,
     'role': role,

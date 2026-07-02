@@ -16,11 +16,15 @@ service firebase.storage {
     }
 
     function isSuperAdmin() {
-      return isSignedIn() && callerRole() == 'SuperAdmin';
+      // Checks both role-string forms — see the matching note in
+      // firestore.rules' isSuperAdmin(): the bootstrap account is
+      // 'SuperAdmin' (PascalCase) but the Dart client's canonical role
+      // constant is 'super_admin', so both must be accepted here too.
+      return isSignedIn() && callerRole() in ['SuperAdmin', 'super_admin'];
     }
 
     function isGymManager() {
-      return isSignedIn() && callerRole() in ['owner', 'admin', 'coach', 'SuperAdmin'];
+      return isSignedIn() && callerRole() in ['owner', 'admin', 'coach', 'SuperAdmin', 'super_admin'];
     }
 
     function callerGymId() {
@@ -38,6 +42,16 @@ service firebase.storage {
     match /assets/{allPaths=**} {
       allow read: if true;
       allow write: if isSuperAdmin();
+    }
+
+    // Nexus Shop product images — public read (players browse the shop),
+    // only Super Admin can upload/replace. Capped generously since these
+    // are product photos, not raw camera dumps.
+    match /shopProducts/{allPaths=**} {
+      allow read: if true;
+      allow write: if isSuperAdmin()
+                   && request.resource.size < 8 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
     }
 
     // Gym-scoped assets (e.g. gym logos): gym managers of that gym can write.

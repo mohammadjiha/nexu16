@@ -12,6 +12,7 @@ import '../../data/admin_repository.dart';
 import '../screens/admin_dashboard_screen.dart';
 import 'admin_subscription_plans_view.dart';
 import 'admin_checkin_view.dart';
+import '../screens/shop_pickups_screen.dart';
 import '../../../../core/widgets/spinning_dumbbell.dart';
 
 // ─── Admin More / Coaches View ────────────────────────────────────────────────
@@ -167,6 +168,21 @@ class AdminMoreView extends ConsumerWidget {
               'Attendance / Check-in',
               'Mark daily player attendance',
               color: const Color(0xFF34C759),
+            ),
+          ),
+          Divider(color: Colors.white.withOpacity(0.07), height: 3.h),
+          GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ShopPickupsScreen(gymId: gymId),
+              ),
+            ),
+            child: _buildSettingsRow(
+              Icons.shopping_bag_rounded,
+              'Shop Pickups',
+              'Confirm players collected their orders',
+              color: const Color(0xFFFF9500),
             ),
           ),
           Divider(color: Colors.white.withOpacity(0.07), height: 3.h),

@@ -446,6 +446,209 @@ exports.createBulkCommissionPayment = functions
     };
   });
 
+// ─── Nexus Shop ────────────────────────────────────────────────────────────
+// Central product catalog (Super Admin managed) with pickup-at-gym
+// fulfillment. Mirrors the commission-payment pattern above: create a
+// PaymentIntent server-side (never trust a client-supplied price), then
+// verify + fulfill (decrement stock, write the order) only after Stripe
+// confirms the charge actually succeeded.
+
+// ─── createShopPayment ────────────────────────────────────────────────────────
+// Creates a Stripe PaymentIntent for a product purchase. Price and stock are
+// read from Firestore server-side — the client only picks productId/quantity.
+exports.createShopPayment = functions
+  .runWith({ timeoutSeconds: 30, secrets: ["STRIPE_SECRET_KEY"] })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Sign in required.");
+    }
+    const { productId, gymId } = data;
+    const quantity = Math.max(1, Math.floor(Number(data.quantity) || 1));
+    if (!productId || !gymId) {
+      throw new functions.https.HttpsError("invalid-argument", "Missing productId or gymId");
+    }
+
+    const db = getFirestore();
+    const productSnap = await db.collection("shopProducts").doc(productId).get();
+    if (!productSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "Product not found");
+    }
+    const product = productSnap.data();
+    if (product.isActive === false) {
+      throw new functions.https.HttpsError("failed-precondition", "This product is no longer available");
+    }
+    if ((Number(product.stock) || 0) < quantity) {
+      throw new functions.https.HttpsError("failed-precondition", "Not enough stock available");
+    }
+
+    const basePrice = Number(product.price) || 0;
+    const discountPercent = Math.min(100, Math.max(0, Number(product.discountPercent) || 0));
+    const unitPrice = Math.round(basePrice * (1 - discountPercent / 100) * 1000) / 1000;
+    const totalAmount = Math.round(unitPrice * quantity * 1000) / 1000;
+    const usdCents = Math.max(50, Math.round(totalAmount * JOD_TO_USD * 100));
+
+    const userDoc = await db.collection("users").doc(context.auth.uid).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+    const buyerName = `${userData.firstName || ""} ${userData.lastName || ""}`.trim();
+
+    const paymentIntent = await getStripe().paymentIntents.create({
+      amount: usdCents,
+      currency: "usd",
+      metadata: {
+        type: "shop_order",
+        uid: context.auth.uid,
+        productId,
+        productName: product.name || "",
+        productImage: (product.images && product.images[0]) || "",
+        quantity: String(quantity),
+        unitPrice: String(unitPrice),
+        totalAmount: String(totalAmount),
+        gymId,
+        buyerName,
+      },
+      description: `NEXUS Shop - ${product.name || productId} x${quantity}`,
+    });
+
+    return {
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      unitPrice,
+      totalAmount,
+      quantity,
+    };
+  });
+
+// ─── verifyShopPayment ─────────────────────────────────────────────────────────
+// Confirms the PaymentIntent actually succeeded, then atomically decrements
+// stock and writes the order — inside a transaction so two simultaneous
+// buyers can never both take the last unit.
+exports.verifyShopPayment = functions
+  .runWith({ timeoutSeconds: 30, secrets: ["STRIPE_SECRET_KEY"] })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Sign in required.");
+    }
+    const { paymentIntentId } = data;
+    if (!paymentIntentId) {
+      throw new functions.https.HttpsError("invalid-argument", "Missing paymentIntentId");
+    }
+
+    const paymentIntent = await getStripe().paymentIntents.retrieve(paymentIntentId);
+    if (paymentIntent.status !== "succeeded") {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        `Payment not completed. Status: ${paymentIntent.status}`
+      );
+    }
+    const meta = paymentIntent.metadata || {};
+    if (meta.type !== "shop_order" || meta.uid !== context.auth.uid) {
+      throw new functions.https.HttpsError("permission-denied", "This payment does not belong to you");
+    }
+
+    const db = getFirestore();
+
+    // Idempotency guard — if this PaymentIntent was already turned into an
+    // order (e.g. the client retried verifyShopPayment after a dropped
+    // response), don't decrement stock a second time.
+    const existing = await db.collection("shopOrders")
+      .where("paymentIntentId", "==", paymentIntentId).limit(1).get();
+    if (!existing.empty) {
+      return { verified: true, orderId: existing.docs[0].id, alreadyProcessed: true };
+    }
+
+    const productId = meta.productId;
+    const quantity = Number(meta.quantity) || 1;
+    const productRef = db.collection("shopProducts").doc(productId);
+    const orderRef = db.collection("shopOrders").doc();
+
+    await db.runTransaction(async (tx) => {
+      const productSnap = await tx.get(productRef);
+      const currentStock = productSnap.exists ? Number(productSnap.data().stock) || 0 : 0;
+
+      const orderData = {
+        uid: context.auth.uid,
+        buyerName: meta.buyerName || "",
+        gymId: meta.gymId || "",
+        productId,
+        productName: meta.productName || "",
+        productImage: meta.productImage || "",
+        unitPrice: Number(meta.unitPrice) || 0,
+        quantity,
+        totalAmount: Number(meta.totalAmount) || 0,
+        currency: "JOD",
+        paymentIntentId,
+        status: "pending_pickup",
+        createdAt: FieldValue.serverTimestamp(),
+      };
+
+      if (currentStock < quantity) {
+        // Stock ran out between payment and now (race with another buyer).
+        // The charge already succeeded, so the sale must still be recorded
+        // — flagged for manual admin follow-up rather than silently going
+        // negative or losing the payment.
+        tx.set(orderRef, { ...orderData, stockIssue: true });
+        return;
+      }
+
+      tx.update(productRef, {
+        stock: FieldValue.increment(-quantity),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(orderRef, orderData);
+    });
+
+    return { verified: true, orderId: orderRef.id };
+  });
+
+// ─── markShopOrderPickedUp ─────────────────────────────────────────────────────
+// Gym staff (coach/admin/owner) or Super Admin confirms a player collected
+// their order in person. Scoped to the order's own gym unless super admin.
+exports.markShopOrderPickedUp = functions
+  .runWith({ timeoutSeconds: 30 })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Sign in required.");
+    }
+    const { orderId } = data;
+    if (!orderId) {
+      throw new functions.https.HttpsError("invalid-argument", "Missing orderId");
+    }
+
+    const db = getFirestore();
+    const orderRef = db.collection("shopOrders").doc(orderId);
+    const orderSnap = await orderRef.get();
+    if (!orderSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "Order not found");
+    }
+    const order = orderSnap.data();
+    if (order.status === "picked_up") {
+      return { success: true, alreadyPickedUp: true };
+    }
+
+    const callerDoc = await db.collection("users").doc(context.auth.uid).get();
+    const callerData = callerDoc.exists ? callerDoc.data() : {};
+    const callerRole = (callerData.role || "").toLowerCase();
+    if (callerRole === "player") {
+      throw new functions.https.HttpsError("permission-denied", "Not allowed");
+    }
+    if (!_isSuperAdminRole(callerData.role) && callerData.gymId !== order.gymId) {
+      throw new functions.https.HttpsError("permission-denied", "Different gym");
+    }
+
+    const callerName =
+      `${callerData.firstName || ""} ${callerData.lastName || ""}`.trim() ||
+      callerData.email || "";
+
+    await orderRef.update({
+      status: "picked_up",
+      pickedUpAt: FieldValue.serverTimestamp(),
+      pickedUpByUid: context.auth.uid,
+      pickedUpByName: callerName,
+    });
+
+    return { success: true };
+  });
+
 // ─── updatePlayerPassword ─────────────────────────────────────────────────────
 // Called by Admin to change a player's Firebase Auth password.
 // Only gym admins/coaches of that gym (or super admin) may call this.
@@ -484,8 +687,12 @@ exports.updatePlayerPassword = functions
       throw new functions.https.HttpsError("permission-denied", "Players cannot change passwords");
     }
 
-    // Non-super-admins can only change passwords of users in their own gym
-    if (callerRole !== 'super_admin') {
+    // Non-super-admins can only change passwords of users in their own gym.
+    // _isSuperAdminRole() handles both 'super_admin' and 'SuperAdmin' (see
+    // its definition below) — a plain callerRole === 'super_admin' check
+    // here missed the real bootstrap super-admin account entirely, which
+    // silently forced the "same gym" restriction onto super admin calls.
+    if (!_isSuperAdminRole(callerData.role)) {
       const targetDoc = await db.collection("users").doc(targetUid).get();
       if (!targetDoc.exists) {
         throw new functions.https.HttpsError("not-found", "Target user not found");
@@ -1115,6 +1322,20 @@ async function _repairOnePlayer(db, uid, data) {
   return newEmail;
 }
 
+// Matches both role-string conventions used across this codebase for the
+// app-level super admin: the Dart client's canonical AppRole.superAdmin
+// constant is 'super_admin', but the actual bootstrap account
+// (superadmin.nexus@gmail.com, see firestore.rules) is created with role
+// 'SuperAdmin' — which .toLowerCase()'s to 'superadmin' (no underscore),
+// not 'super_admin'. Checking only 'super_admin' silently failed to
+// recognize the real super-admin account as a super admin, and every
+// Cloud Function guarded by _assertCanManageGym then wrongly enforced the
+// "same gym" restriction on someone who is supposed to bypass it.
+function _isSuperAdminRole(role) {
+  const r = (role || "").toLowerCase();
+  return r === "super_admin" || r === "superadmin";
+}
+
 async function _assertCanManageGym(db, callerUid, gymId) {
   const callerDoc = await db.collection("users").doc(callerUid).get();
   if (!callerDoc.exists) {
@@ -1125,7 +1346,7 @@ async function _assertCanManageGym(db, callerUid, gymId) {
   if (role === "player") {
     throw new functions.https.HttpsError("permission-denied", "Not allowed");
   }
-  if (role !== "super_admin" && c.gymId !== gymId) {
+  if (!_isSuperAdminRole(c.role) && c.gymId !== gymId) {
     throw new functions.https.HttpsError("permission-denied", "Different gym");
   }
 }
@@ -1409,6 +1630,105 @@ exports.resetPasswordViaPhone = functions
 
     const email = recoveryData.email || "";
     return { success: true, email };
+  });
+
+// ─── syncMyAccountRecovery ─────────────────────────────────────────────────────
+// Self-service phone-change sync. Profile edits (player/coach editing their
+// OWN phone from Settings) write straight to /users/{uid} from the client,
+// which always succeeds — but /accountRecovery/{phoneKey} is locked to
+// admins/coaches only (firestore.rules: canManageGym()), so a plain player
+// could never legally write their own new mapping there, leaving
+// forgot-password-via-phone broken for the number they just switched to.
+//
+// Call this (no arguments needed) right after a successful profile save that
+// touched the phone field. It trusts nothing from the client — it re-reads
+// the caller's own /users/{uid} doc (via context.auth.uid) as the source of
+// truth, deletes any accountRecovery entries that still point at this uid
+// under a stale/old phone key, and writes/refreshes the entry for the
+// current phone. Self-healing: safe to call any time, not just on change.
+exports.syncMyAccountRecovery = functions
+  .runWith({ timeoutSeconds: 30 })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "Must be signed in.");
+    }
+    const uid = context.auth.uid;
+    const db = getFirestore();
+
+    const userSnap = await db.collection("users").doc(uid).get();
+    if (!userSnap.exists) {
+      throw new functions.https.HttpsError("not-found", "User profile not found.");
+    }
+    const userData = userSnap.data();
+    const rawPhone = String(userData.phone || "").trim();
+    const email = String(userData.email || userData.authEmail || "")
+      .trim()
+      .toLowerCase();
+    const gymId = userData.gymId || "";
+    const role = userData.role || "";
+
+    let normalizedPhone = null;
+    let currentKey = null;
+    if (rawPhone) {
+      if (rawPhone.startsWith("+")) {
+        normalizedPhone = rawPhone;
+      } else {
+        const digits = rawPhone.replace(/\D/g, "");
+        normalizedPhone = digits.startsWith("0")
+          ? "+962" + digits.substring(1)
+          : digits.startsWith("962")
+          ? "+" + digits
+          : "+962" + digits;
+      }
+      currentKey = normalizedPhone.replace(/\D/g, "");
+    }
+
+    // Clean up any stale entries pointing at this uid under a different
+    // (old) phone key.
+    const existingForUid = await db
+      .collection("accountRecovery")
+      .where("uid", "==", uid)
+      .get();
+
+    const batch = db.batch();
+    let deleted = 0;
+    for (const doc of existingForUid.docs) {
+      if (doc.id !== currentKey) {
+        batch.delete(doc.ref);
+        deleted++;
+      }
+    }
+
+    let written = false;
+    if (currentKey) {
+      const targetRef = db.collection("accountRecovery").doc(currentKey);
+      const targetSnap = await targetRef.get();
+      if (targetSnap.exists && targetSnap.data().uid !== uid) {
+        throw new functions.https.HttpsError(
+          "already-exists",
+          "This phone number is already linked to another account."
+        );
+      }
+      batch.set(
+        targetRef,
+        {
+          uid,
+          email,
+          phone: normalizedPhone,
+          gymId,
+          role,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      written = true;
+    }
+
+    await batch.commit();
+    console.log(
+      `[syncMyAccountRecovery] uid=${uid} key=${currentKey} deleted=${deleted} written=${written}`
+    );
+    return { success: true, deleted, written };
   });
 
 // ─── broadcastToAllUsers ──────────────────────────────────────────────────────

@@ -93,7 +93,7 @@ class AdminRepository {
     await _firestore.collection('gyms').doc(gymId).update({
       'gymName': gymName.trim(),
       'gymCity': gymCity.trim(),
-      'phone': phone.trim(),
+      'phone': phone.trim().isEmpty ? '' : _normalizePhone(phone.trim()),
       'address': address.trim(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
@@ -157,7 +157,7 @@ class AdminRepository {
       'status': 'active',
       'firstName': firstName?.trim() ?? '',
       'lastName': lastName?.trim() ?? '',
-      'phone': phone?.trim() ?? '',
+      'phone': (phone == null || phone.trim().isEmpty) ? '' : _normalizePhone(phone.trim()),
       'notes': notes?.trim() ?? '',
       'addedBy': addedByUid,
       'addedAt': FieldValue.serverTimestamp(),
@@ -177,6 +177,35 @@ class AdminRepository {
     required String phone,
   }) async {
     final displayName = '${firstName.trim()} ${lastName.trim()}'.trim();
+
+    // Read the coach's CURRENT doc first — needed to know the OLD phone (so
+    // its stale accountRecovery entry can be cleaned up) and the coach's
+    // email (to carry into the new entry). Without this step, editing a
+    // coach's phone here silently left phone-based password recovery
+    // pointing at nothing / the old number forever.
+    final coachSnap = await _firestore.collection('users').doc(coachUid).get();
+    final coachData = coachSnap.data();
+    final coachEmail =
+        (coachData?['email'] as String?)?.trim().toLowerCase() ?? '';
+    final oldPhone = (coachData?['phone'] as String?)?.trim();
+
+    final newPhone = phone.trim();
+    final normalizedNewPhone = newPhone.isEmpty ? '' : _normalizePhone(newPhone);
+    final newRecoveryKey = newPhone.isEmpty ? null : _phoneKey(normalizedNewPhone);
+    final oldRecoveryKey = (oldPhone == null || oldPhone.isEmpty)
+        ? null
+        : _phoneKey(_normalizePhone(oldPhone));
+
+    // Guard against silently stealing someone else's recovery mapping.
+    if (newRecoveryKey != null && newRecoveryKey != oldRecoveryKey) {
+      final existing = await _firestore
+          .collection('accountRecovery')
+          .doc(newRecoveryKey)
+          .get();
+      if (existing.exists && existing.data()?['uid'] != coachUid) {
+        throw Exception('This phone number is already registered to another account.');
+      }
+    }
 
     // 3. Fan-out: find all players assigned to this coach and update their
     //    denormalized assignedCoachName field so every screen stays in sync.
@@ -201,14 +230,14 @@ class AdminRepository {
       await b.commit();
     }
 
-    // Main batch: coach doc + gym member doc
+    // Main batch: coach doc + gym member doc + accountRecovery sync
     final batch = _firestore.batch();
 
     // 1. Top-level user doc
     batch.update(_firestore.collection('users').doc(coachUid), {
       'firstName': firstName.trim(),
       'lastName': lastName.trim(),
-      'phone': phone.trim(),
+      'phone': normalizedNewPhone,
       'updatedAt': FieldValue.serverTimestamp(),
     });
 
@@ -217,14 +246,35 @@ class AdminRepository {
       _firestore.collection('gyms').doc(gymId).collection('members').doc(coachUid),
       {
         'displayName': displayName,
-        'phone': phone.trim(),
+        'phone': normalizedNewPhone,
         'updatedAt': FieldValue.serverTimestamp(),
       },
     );
 
+    // 3. accountRecovery/{phoneKey} — keep phone-based password reset in
+    // sync with the coach's real current phone. Delete the stale old-phone
+    // entry (if the number changed) and write/refresh the new one.
+    if (oldRecoveryKey != null && oldRecoveryKey != newRecoveryKey) {
+      batch.delete(_firestore.collection('accountRecovery').doc(oldRecoveryKey));
+    }
+    if (newRecoveryKey != null) {
+      batch.set(
+        _firestore.collection('accountRecovery').doc(newRecoveryKey),
+        {
+          'uid': coachUid,
+          'email': coachEmail,
+          'phone': normalizedNewPhone,
+          'gymId': gymId,
+          'role': 'coach',
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+    }
+
     await batch.commit();
 
-    // 3. Fan-out player docs in chunks
+    // 4. Fan-out player docs in chunks
     for (var i = 0; i < allDocs.length; i += chunkSize) {
       final chunk = allDocs.sublist(
           i, (i + chunkSize).clamp(0, allDocs.length));
@@ -964,6 +1014,7 @@ class AdminRepository {
     required String addedByUid,
   }) async {
     final normalizedEmail = email.trim().toLowerCase();
+    final normalizedPhone = phone.trim().isEmpty ? '' : _normalizePhone(phone.trim());
     final now = DateTime.now();
 
     // 1. Create Auth account via secondary app so admin stays signed in
@@ -995,7 +1046,7 @@ class AdminRepository {
       'gymCode': gymId,
       'firstName': firstName.trim(),
       'lastName': lastName.trim(),
-      'phone': phone.trim(),
+      'phone': normalizedPhone,
       'isActive': true,
       'emailVerified': true,
       'temporaryPasswordSet': true,
@@ -1014,7 +1065,7 @@ class AdminRepository {
         'gymId': gymId,
         'firstName': firstName.trim(),
         'lastName': lastName.trim(),
-        'phone': phone.trim(),
+        'phone': normalizedPhone,
         'status': 'active',
         'joinedAt': Timestamp.fromDate(now),
       },
@@ -1032,7 +1083,7 @@ class AdminRepository {
         'status': 'active',
         'firstName': firstName.trim(),
         'lastName': lastName.trim(),
-        'phone': phone.trim(),
+        'phone': normalizedPhone,
         'addedBy': addedByUid,
         'addedAt': Timestamp.fromDate(now),
       },
@@ -1045,8 +1096,7 @@ class AdminRepository {
     });
 
     // accountRecovery/{phoneKey} — enables phone-based account recovery
-    if (phone.trim().isNotEmpty) {
-      final normalizedPhone = _normalizePhone(phone.trim());
+    if (normalizedPhone.isNotEmpty) {
       final recoveryKey = _phoneKey(normalizedPhone);
       batch.set(
         _firestore.collection('accountRecovery').doc(recoveryKey),
@@ -1091,6 +1141,8 @@ class AdminRepository {
     final first = firstName.trim();
     final last  = lastName.trim();
     final now   = DateTime.now();
+    final normalizedPhone =
+        (phone == null || phone.trim().isEmpty) ? '' : _normalizePhone(phone.trim());
 
     // Generate email if missing OR if the provided one is bad (Arabic, @gym-…).
     // Format: firstname.lastname.XXXXXX@gmail.com (all ASCII, readable)
@@ -1136,7 +1188,7 @@ class AdminRepository {
       'email':            normalizedEmail,
       'firstName':        first,
       'lastName':         last,
-      'phone':            phone?.trim() ?? '',
+      'phone':            normalizedPhone,
       'role':             'player',
       'gymId':            gymId,
       'gymCode':          gymId,
@@ -1200,7 +1252,7 @@ class AdminRepository {
         'gymId':      gymId,
         'firstName':  first,
         'lastName':   last,
-        'phone':      phone?.trim() ?? '',
+        'phone':      normalizedPhone,
         'status':     'active',
         'joinedAt':   Timestamp.fromDate(now),
       });
@@ -1216,11 +1268,37 @@ class AdminRepository {
         'status':     'active',
         'firstName':  first,
         'lastName':   last,
-        'phone':      phone?.trim() ?? '',
+        'phone':      normalizedPhone,
         'addedBy':    addedByUid,
         'addedAt':    Timestamp.fromDate(now),
       }, SetOptions(merge: true));
     } catch (_) { /* non-critical */ }
+
+    // ── 4. accountRecovery/{phoneKey} — enables phone-based password
+    // recovery. Previously missing entirely for CSV-imported players, so
+    // forgot-password-via-phone silently never worked for anyone imported
+    // this way, from day one of their account (best-effort: doesn't block
+    // player creation if it fails).
+    if (normalizedPhone.isNotEmpty) {
+      try {
+        final recoveryRef = _firestore
+            .collection('accountRecovery')
+            .doc(_phoneKey(normalizedPhone));
+        final existing = await recoveryRef.get();
+        // Skip silently rather than stealing another account's mapping —
+        // consistent with updatePlayerFields()'s conflict handling.
+        if (!existing.exists || existing.data()?['uid'] == uid) {
+          await recoveryRef.set({
+            'uid': uid,
+            'email': normalizedEmail,
+            'phone': normalizedPhone,
+            'gymId': gymId,
+            'role': 'player',
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        }
+      } catch (_) { /* non-critical */ }
+    }
 
     return {'uid': uid, 'email': normalizedEmail, 'password': password};
   }
@@ -1501,8 +1579,76 @@ class AdminRepository {
   }
 
   /// Manually update arbitrary fields on a player document.
+  /// Generic field patcher used by bulk/CSV-import flows. If [fields]
+  /// contains a 'phone' key, this also keeps /accountRecovery in sync
+  /// (delete stale old-phone entry, write/refresh the new one) — the same
+  /// sync that updateCoachInfo() and coach_repository's updatePlayer()
+  /// already do for their own call sites. Without this, a phone number
+  /// changed via CSV import would silently break phone-based password
+  /// recovery for that player, exactly like the updateCoachInfo bug.
   Future<void> updatePlayerFields(String uid, Map<String, dynamic> fields) async {
-    await _firestore.collection('users').doc(uid).update({
+    final userRef = _firestore.collection('users').doc(uid);
+
+    if (fields.containsKey('phone')) {
+      final newPhone = (fields['phone'] as String?)?.trim() ?? '';
+      final currentSnap = await userRef.get();
+      final currentData = currentSnap.data();
+      final oldPhone = (currentData?['phone'] as String?)?.trim();
+      final email = (currentData?['email'] as String?)?.trim().toLowerCase() ?? '';
+      final gymId = currentData?['gymId'] as String? ?? '';
+      final role = currentData?['role'] as String? ?? 'player';
+
+      final normalizedNewPhone = newPhone.isEmpty ? '' : _normalizePhone(newPhone);
+      final newRecoveryKey = newPhone.isEmpty ? null : _phoneKey(normalizedNewPhone);
+      final oldRecoveryKey = (oldPhone == null || oldPhone.isEmpty)
+          ? null
+          : _phoneKey(_normalizePhone(oldPhone));
+      // Always store the normalized form, not whatever raw shape the CSV/UI
+      // passed in — otherwise the field itself stays inconsistent even
+      // though the recovery key below is computed correctly.
+      final patchedFields = {...fields, 'phone': normalizedNewPhone};
+
+      if (newRecoveryKey != oldRecoveryKey) {
+        final batch = _firestore.batch();
+        batch.update(userRef, {...patchedFields, 'updatedAt': FieldValue.serverTimestamp()});
+        if (oldRecoveryKey != null) {
+          batch.delete(_firestore.collection('accountRecovery').doc(oldRecoveryKey));
+        }
+        if (newRecoveryKey != null) {
+          final existing = await _firestore
+              .collection('accountRecovery')
+              .doc(newRecoveryKey)
+              .get();
+          if (!existing.exists || existing.data()?['uid'] == uid) {
+            batch.set(
+              _firestore.collection('accountRecovery').doc(newRecoveryKey),
+              {
+                'uid': uid,
+                'email': email,
+                'phone': normalizedNewPhone,
+                'gymId': gymId,
+                'role': role,
+                'updatedAt': FieldValue.serverTimestamp(),
+              },
+              SetOptions(merge: true),
+            );
+          }
+          // else: phone already claimed by a different uid — skip silently
+          // rather than throwing mid-bulk-import; the field still updates,
+          // just the recovery mapping isn't stolen from the other account.
+        }
+        await batch.commit();
+        return;
+      }
+
+      await userRef.update({
+        ...patchedFields,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return;
+    }
+
+    await userRef.update({
       ...fields,
       'updatedAt': FieldValue.serverTimestamp(),
     });

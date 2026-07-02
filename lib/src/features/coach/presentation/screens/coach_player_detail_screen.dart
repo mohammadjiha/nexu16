@@ -1,3 +1,4 @@
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:nexus/src/features/payment/commission_payment_dialog.dart';
@@ -35,6 +36,7 @@ class CoachPlayerDetailScreen extends ConsumerStatefulWidget {
 class _CoachPlayerDetailScreenState
     extends ConsumerState<CoachPlayerDetailScreen> {
   int _currentTab = 0;
+  bool _resettingPassword = false;
 
   @override
   Widget build(BuildContext context) {
@@ -794,7 +796,13 @@ class _CoachPlayerDetailScreenState
         _buildDivider(),
         _buildInfoRow('login_email'.tr(context), player.email),
         _buildDivider(),
-        _buildInfoRow('password'.tr(context), '........'),
+        _buildInfoRow(
+          'password'.tr(context),
+          (player.temporaryPassword != null &&
+                  player.temporaryPassword!.isNotEmpty)
+              ? player.temporaryPassword!
+              : '........',
+        ),
         _buildDivider(),
         _buildInfoRow(
           'account_status'.tr(context),
@@ -827,13 +835,71 @@ class _CoachPlayerDetailScreenState
               : 'NEXUS v${player.appVersion}',
         ),
         _buildDivider(),
-        _buildResetPasswordRow(context),
+        _buildResetPasswordRow(context, player),
       ],
     );
   }
 
-  Widget _buildResetPasswordRow(BuildContext context) {
-    return Padding(
+  // Was previously a purely decorative row with no onTap handler at all —
+  // looked like a working "reset password" action but did nothing when
+  // tapped. Wired up to actually call updatePlayerPassword, mirroring the
+  // admin panel's auto-generate reset flow (admin_players_view.dart's
+  // _resetPlayerPassword): generates a fresh password, marks it temporary
+  // (player must set their own on next login), shows it to the coach so
+  // they can share it, and refreshes the coach's player list so the
+  // password field above reflects it immediately.
+  Future<void> _resetPlayerPassword(
+      BuildContext context, UserModel player) async {
+    if (_resettingPassword) return;
+    setState(() => _resettingPassword = true);
+
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    final seed = DateTime.now().microsecondsSinceEpoch;
+    final newPw =
+        List.generate(8, (i) => chars[(seed + i * 7919) % chars.length]).join();
+
+    try {
+      final result = await FirebaseFunctions.instanceFor(region: 'us-central1')
+          .httpsCallable('updatePlayerPassword')
+          .call({
+        'targetUid': player.uid,
+        'newPassword': newPw,
+        'temporary': true,
+      });
+      final authEmail =
+          (result.data as Map?)?['authEmail'] as String? ?? player.email;
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+            'تم إعادة التعيين ✅\nكلمة المرور: $newPw\nالإيميل: $authEmail',
+            style: TextStyle(fontSize: 15.sp, height: 1.5),
+          ),
+          duration: const Duration(seconds: 8),
+          backgroundColor: const Color(0xFF34C759),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+      ref.invalidate(coachMembersProvider);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('فشل إعادة التعيين: $e',
+              style: TextStyle(fontSize: 15.sp)),
+          backgroundColor: const Color(0xFFFF3B30),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _resettingPassword = false);
+    }
+  }
+
+  Widget _buildResetPasswordRow(BuildContext context, UserModel player) {
+    return InkWell(
+      onTap: _resettingPassword
+          ? null
+          : () => _resetPlayerPassword(context, player),
+      child: Padding(
       padding: EdgeInsets.symmetric(vertical: 1.5.h),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -852,7 +918,13 @@ class _CoachPlayerDetailScreenState
               ),
             ],
           ),
-          Text(
+          _resettingPassword
+              ? SizedBox(
+                  width: 14.sp,
+                  height: 14.sp,
+                  child: const CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(
             'coach_send_email'.tr(context),
             style: TextStyle(
               fontSize: 14.sp,
@@ -861,6 +933,7 @@ class _CoachPlayerDetailScreenState
             ),
           ),
         ],
+      ),
       ),
     );
   }
