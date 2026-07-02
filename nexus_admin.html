@@ -111,6 +111,25 @@ tbody td{padding:10px 14px;vertical-align:middle;text-align:right}
 .icon-btn.danger:hover{background:rgba(255,59,48,.15);color:var(--red)}
 .icon-btn.edit:hover{background:rgba(91,168,255,.15);color:var(--blue)}
 
+.shop-product-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.shop-product-card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;transition:.15s}
+.shop-product-card:hover{border-color:rgba(255,255,255,.15)}
+.shop-product-img{width:100%;height:140px;background:rgba(255,255,255,.04);display:flex;align-items:center;justify-content:center;font-size:34px;color:var(--text3);overflow:hidden;position:relative}
+.shop-product-img img{width:100%;height:100%;object-fit:cover}
+.shop-product-badge{position:absolute;top:8px;right:8px;background:var(--red);color:#fff;font-size:12px;font-weight:800;padding:2px 8px;border-radius:20px}
+.shop-product-body{padding:12px 14px}
+.shop-product-name{font-size:16px;font-weight:800;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.shop-product-price{font-size:15px;font-weight:800;color:var(--orange)}
+.shop-product-price-old{font-size:13px;color:var(--text3);text-decoration:line-through;margin-right:6px}
+.shop-product-meta{font-size:13px;color:var(--text3);margin-top:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.shop-product-actions{display:flex;gap:6px;padding:10px 14px 14px;align-items:center;border-top:1px solid var(--border);margin-top:6px}
+.img-upload-grid{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.img-upload-thumb{position:relative;width:72px;height:72px;border-radius:10px;overflow:hidden;background:rgba(255,255,255,.05)}
+.img-upload-thumb img{width:100%;height:100%;object-fit:cover}
+.img-upload-remove{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.7);color:#fff;border:none;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.img-upload-add{width:72px;height:72px;border-radius:10px;border:1.5px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--text3);cursor:pointer;background:rgba(255,255,255,.03)}
+.img-upload-add:hover{border-color:var(--blue);color:var(--blue)}
+
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);z-index:1000;display:none;align-items:center;justify-content:center;padding:20px}
 .modal-overlay.open{display:flex}
 .modal{background:var(--card);border:1px solid var(--border);border-radius:20px;width:100%;max-width:540px;max-height:90vh;overflow-y:auto}
@@ -232,6 +251,9 @@ tbody td{padding:10px 14px;vertical-align:middle;text-align:right}
     <button class="nav-item" id="nav-payments" onclick="showPage('payments')"><span class="nav-icon">💰</span>المدفوعات</button>
     <button class="nav-item" id="nav-invoices" onclick="showPage('invoices')"><span class="nav-icon">🧾</span>فواتير العمولة</button>
     <button class="nav-item" id="nav-messages" onclick="showPage('messages')"><span class="nav-icon">📨</span>الرسائل المرسلة</button>
+    <div class="sidebar-section">المتجر</div>
+    <button class="nav-item" id="nav-shopproducts" onclick="showPage('shopproducts')"><span class="nav-icon">🛍️</span>منتجات المتجر</button>
+    <button class="nav-item" id="nav-shoporders" onclick="showPage('shoporders')"><span class="nav-icon">📦</span>طلبات المتجر</button>
     <div class="sidebar-section">إدارة</div>
     <button class="nav-item" id="nav-broadcast" onclick="openBroadcastAll()" style="color:var(--orange)"><span class="nav-icon">📢</span>إشعار عام</button>
     <button class="nav-item" id="nav-create" onclick="openCreateModal()"><span class="nav-icon">➕</span>نادي جديد</button>
@@ -435,6 +457,38 @@ tbody td{padding:10px 14px;vertical-align:middle;text-align:right}
       <div class="table-wrap"><table>
         <thead><tr><th>العنوان</th><th>النادي</th><th>النوع</th><th>النص</th><th>قُرئت؟</th><th>التاريخ</th></tr></thead>
         <tbody id="messages-tbody"><tr><td colspan="6" class="no-data">اضغط تحديث لتحميل الرسائل</td></tr></tbody>
+      </table></div>
+    </div>
+
+    <!-- Shop Products -->
+    <div class="page" id="page-shopproducts">
+      <div class="page-title">منتجات متجر Nexus 🛍️</div>
+      <div class="page-sub">يظهر هذا المتجر لكل اللاعبين من أي نادٍ — الدفع عبر Stripe والاستلام من صالة النادي</div>
+      <div class="section-header">
+        <div class="section-title" id="sp-count">0 منتج</div>
+        <button class="btn-add" onclick="openProductEditor()">➕ منتج جديد</button>
+      </div>
+      <div id="shop-products-grid" class="shop-product-grid"></div>
+    </div>
+
+    <!-- Shop Orders -->
+    <div class="page" id="page-shoporders">
+      <div class="page-title">طلبات متجر Nexus 📦</div>
+      <div class="page-sub">كل طلبات الشراء من جميع الأندية — مرتبة من الأحدث</div>
+      <div class="filter-bar">
+        <input class="search-input" id="so-search" placeholder="🔍 ابحث بالاسم أو المنتج..." oninput="filterShopOrdersRender()"/>
+        <select class="filter-select" id="so-gym-filter" onchange="filterShopOrdersRender()"><option value="all">كل الأندية</option></select>
+        <select class="filter-select" id="so-status-filter" onchange="filterShopOrdersRender()">
+          <option value="all">كل الحالات</option>
+          <option value="pending_pickup">بانتظار الاستلام</option>
+          <option value="picked_up">تم الاستلام</option>
+        </select>
+        <button class="btn-add-blue" onclick="loadShopOrdersPage()">🔄 تحديث</button>
+      </div>
+      <div id="so-load-info" style="font-size:14px;color:var(--text3);margin-bottom:8px"></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>المشتري</th><th>النادي</th><th>المنتج</th><th>الكمية</th><th>الإجمالي JOD</th><th>الحالة</th><th>التاريخ</th><th></th></tr></thead>
+        <tbody id="shop-orders-tbody"><tr><td colspan="8" class="no-data">اضغط تحديث لتحميل الطلبات</td></tr></tbody>
       </table></div>
     </div>
 
@@ -1025,6 +1079,37 @@ tbody td{padding:10px 14px;vertical-align:middle;text-align:right}
   </div>
 </div>
 
+<!-- ══════════ SHOP PRODUCT EDITOR MODAL ══════════ -->
+<div class="modal-overlay" id="product-editor-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="pe-title">➕ منتج جديد</div>
+      <button class="modal-close" onclick="closeModal('product-editor-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-wrap">
+        <div class="field-label">الصور</div>
+        <div class="img-upload-grid" id="pe-images"></div>
+        <input type="file" id="pe-file-input" accept="image/*" multiple style="display:none" onchange="onProductImageSelected(event)"/>
+      </div>
+      <div class="field-wrap"><div class="field-label">اسم المنتج</div><input class="field-input" id="pe-name" placeholder="مثال: بروتين واي 2 كيلو"/></div>
+      <div class="field-wrap"><div class="field-label">الوصف</div><textarea class="field-input" id="pe-desc" rows="3" style="resize:vertical" placeholder="وصف المنتج..."></textarea></div>
+      <div class="field-wrap"><div class="field-label">الفئة (اختياري)</div><input class="field-input" id="pe-category" placeholder="مثال: بروتين، مكملات"/></div>
+      <div class="form-row">
+        <div class="field-wrap"><div class="field-label">السعر (د.أ)</div><input class="field-input" id="pe-price" type="number" min="0" step="0.01"/></div>
+        <div class="field-wrap"><div class="field-label">الخصم % (اختياري)</div><input class="field-input" id="pe-discount" type="number" min="0" max="100"/></div>
+      </div>
+      <div class="field-wrap"><div class="field-label">الكمية المتوفرة (المخزون)</div><input class="field-input" id="pe-stock" type="number" min="0"/></div>
+      <label class="toggle-wrap"><input type="checkbox" id="pe-active" checked/> منتج نشط (يظهر للاعبين)</label>
+      <div class="err-box" id="pe-error"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal('product-editor-modal')">إلغاء</button>
+      <button class="btn-save" id="pe-save-btn" onclick="saveProduct()">💾 حفظ</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- SheetJS for Excel export -->
@@ -1041,6 +1126,8 @@ import { getFirestore, collection, collectionGroup, getDocs, getDoc,
          query, where, orderBy, limit,
          onSnapshot, serverTimestamp, Timestamp }
                               from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL }
+                              from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js';
 
 const firebaseConfig = {
   apiKey:"AIzaSyBcVcL560bl4OwjTjRPrRNUL-EEHT05Eqg",
@@ -1053,6 +1140,7 @@ const firebaseConfig = {
 const app      = initializeApp(firebaseConfig,'main');
 const auth     = getAuth(app);
 const db       = getFirestore(app);
+const storage  = getStorage(app);
 const appSec   = initializeApp(firebaseConfig,'secondary');
 const authSec  = getAuth(appSec);
 
@@ -1253,7 +1341,8 @@ function showPage(page) {
   ({overview:renderOverview,gyms:renderGyms,users:renderUsers,
     players:renderPlayers,coaches:renderCoaches,
     payments:loadPaymentsPage,messages:loadMessagesPage,
-    invoices:loadInvoicesPage})[page]?.();
+    invoices:loadInvoicesPage,
+    shopproducts:loadShopProductsPage,shoporders:loadShopOrdersPage})[page]?.();
 }
 
 // updateStats defined below (new version)
@@ -3300,6 +3389,246 @@ function filterInvoicesRender() {
   }).join('');
 }
 
+// ── Nexus Shop: Products ────────────────────────────────────────────────────
+// Direct Firestore/Storage writes from here (no Cloud Functions call) — the
+// same super-admin account already passes isSuperAdmin() in both
+// firestore.rules and storage.rules, exactly like every other write this
+// panel already does (gyms, users, etc). Live via onSnapshot so edits made
+// from the Flutter app or another admin tab show up immediately.
+let _allShopProducts  = [];
+let unsubShopProducts = null;
+let _peImages    = []; // images currently staged in the product editor
+let _peEditingId = null; // null = creating a new product
+
+function loadShopProductsPage() {
+  if (unsubShopProducts) { renderShopProducts(); return; } // already live-subscribed
+  unsubShopProducts = onSnapshot(collection(db,'shopProducts'), snap => {
+    _allShopProducts = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+    renderShopProducts();
+  }, err => {
+    document.getElementById('shop-products-grid').innerHTML =
+      `<div class="no-data" style="grid-column:1/-1">خطأ: ${esc(err.message)}</div>`;
+  });
+}
+
+function renderShopProducts() {
+  const grid = document.getElementById('shop-products-grid');
+  document.getElementById('sp-count').textContent = `${_allShopProducts.length} منتج`;
+  if (!_allShopProducts.length) {
+    grid.innerHTML = `<div class="no-data" style="grid-column:1/-1">لا توجد منتجات — اضغط "منتج جديد" للبدء</div>`;
+    return;
+  }
+  grid.innerHTML = _allShopProducts.map(p => {
+    const price     = Number(p.price) || 0;
+    const discount  = Number(p.discountPercent) || 0;
+    const effective = discount > 0 ? price * (1 - discount/100) : price;
+    const img       = (p.images && p.images[0]) || '';
+    const stock     = Number(p.stock) || 0;
+    const active    = p.isActive !== false;
+    return `
+    <div class="shop-product-card">
+      <div class="shop-product-img">
+        ${discount>0?`<span class="shop-product-badge">-${discount.toFixed(0)}%</span>`:''}
+        ${img?`<img src="${esc(img)}" onerror="this.style.display='none'"/>`:'🛍️'}
+      </div>
+      <div class="shop-product-body">
+        <div class="shop-product-name" title="${esc(p.name||'')}">${esc(p.name||'—')}</div>
+        <div>
+          <span class="shop-product-price">${effective.toFixed(2)} د.أ</span>
+          ${discount>0?`<span class="shop-product-price-old">${price.toFixed(2)}</span>`:''}
+        </div>
+        <div class="shop-product-meta">
+          <span>📦 ${stock}</span>
+          ${p.category?`<span>· ${esc(p.category)}</span>`:''}
+        </div>
+      </div>
+      <div class="shop-product-actions">
+        <button onclick="toggleProductActive('${p.id}',${!active})"
+          style="padding:4px 10px;border-radius:20px;border:none;font-size:12px;font-weight:800;cursor:pointer;background:${active?'rgba(52,199,89,.15)':'rgba(255,59,48,.15)'};color:${active?'var(--green)':'var(--red)'}">
+          ${active?'نشط ✓':'موقوف ✗'}
+        </button>
+        <span style="flex:1"></span>
+        <button class="icon-btn edit" title="تعديل" onclick="openProductEditor('${p.id}')">✏️</button>
+        <button class="icon-btn danger" title="حذف" onclick="deleteProductConfirm('${p.id}','${esc(p.name||'')}')">🗑️</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleProductActive(id, newVal) {
+  updateDoc(doc(db,'shopProducts',id), { isActive:newVal, updatedAt:serverTimestamp() })
+    .then(()=>showToast(newVal?'✅ تم تفعيل المنتج':'⏸️ تم إيقاف المنتج','success'))
+    .catch(e=>showToast('❌ '+e.message,'error'));
+}
+
+function deleteProductConfirm(id, name) {
+  if (!confirm(`حذف "${name}" نهائياً؟ لا يمكن التراجع.`)) return;
+  deleteDoc(doc(db,'shopProducts',id))
+    .then(()=>showToast('🗑️ تم حذف المنتج','success'))
+    .catch(e=>showToast('❌ '+e.message,'error'));
+}
+
+function openProductEditor(id) {
+  _peEditingId = id || null;
+  const existing = id ? _allShopProducts.find(p=>p.id===id) : null;
+  document.getElementById('pe-title').textContent   = existing ? '✏️ تعديل المنتج' : '➕ منتج جديد';
+  document.getElementById('pe-name').value          = existing?.name || '';
+  document.getElementById('pe-desc').value          = existing?.description || '';
+  document.getElementById('pe-category').value      = existing?.category || '';
+  document.getElementById('pe-price').value         = existing ? (Number(existing.price)||0) : '';
+  document.getElementById('pe-discount').value      = existing && Number(existing.discountPercent)>0 ? existing.discountPercent : '';
+  document.getElementById('pe-stock').value         = existing ? (Number(existing.stock)||0) : '';
+  document.getElementById('pe-active').checked      = existing ? existing.isActive!==false : true;
+  document.getElementById('pe-error').style.display = 'none';
+  _peImages = existing?.images ? [...existing.images] : [];
+  renderPeImages();
+  document.getElementById('product-editor-modal').classList.add('open');
+}
+
+function renderPeImages() {
+  const wrap = document.getElementById('pe-images');
+  wrap.innerHTML = _peImages.map((url,i) => `
+    <div class="img-upload-thumb">
+      <img src="${esc(url)}"/>
+      <button class="img-upload-remove" onclick="removePeImage(${i})">✕</button>
+    </div>`).join('') +
+    `<div class="img-upload-add" id="pe-add-btn" onclick="document.getElementById('pe-file-input').click()">＋</div>`;
+}
+
+function removePeImage(i) {
+  _peImages.splice(i,1);
+  renderPeImages();
+}
+
+async function onProductImageSelected(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  if (!files.length) return;
+  for (const file of files) {
+    const addBtn = document.getElementById('pe-add-btn');
+    if (addBtn) addBtn.textContent = '⏳';
+    try {
+      const path = `shopProducts/${Date.now()}_${file.name}`;
+      const snap = await uploadBytes(storageRef(storage, path), file);
+      const url  = await getDownloadURL(snap.ref);
+      _peImages.push(url);
+      renderPeImages();
+    } catch(e) {
+      document.getElementById('pe-error').textContent = 'فشل رفع الصورة: '+e.message;
+      document.getElementById('pe-error').style.display = 'block';
+    }
+  }
+}
+
+function _peErr(msg) {
+  const el = document.getElementById('pe-error');
+  el.textContent = msg; el.style.display = 'block';
+}
+
+async function saveProduct() {
+  const name  = document.getElementById('pe-name').value.trim();
+  const price = parseFloat(document.getElementById('pe-price').value);
+  document.getElementById('pe-error').style.display = 'none';
+  if (!name) return _peErr('اسم المنتج مطلوب');
+  if (isNaN(price) || price <= 0) return _peErr('السعر غير صحيح');
+  const discount    = Math.min(100, Math.max(0, parseFloat(document.getElementById('pe-discount').value) || 0));
+  const stock       = Math.max(0, parseInt(document.getElementById('pe-stock').value) || 0);
+  const description = document.getElementById('pe-desc').value.trim();
+  const category    = document.getElementById('pe-category').value.trim();
+  const isActive    = document.getElementById('pe-active').checked;
+
+  const btn = document.getElementById('pe-save-btn');
+  btn.disabled = true; btn.innerHTML = 'جارٍ الحفظ… <span class="spinner"></span>';
+  try {
+    const data = {
+      name, description, price, discountPercent:discount,
+      images:_peImages, category, stock, isActive,
+      updatedAt: serverTimestamp(),
+    };
+    if (_peEditingId) {
+      await updateDoc(doc(db,'shopProducts',_peEditingId), data);
+    } else {
+      await addDoc(collection(db,'shopProducts'), { ...data, createdAt:serverTimestamp() });
+    }
+    closeModal('product-editor-modal');
+    showToast('✅ تم حفظ المنتج','success');
+  } catch(e) {
+    _peErr('فشل الحفظ: '+e.message);
+  } finally {
+    btn.disabled = false; btn.innerHTML = '💾 حفظ';
+  }
+}
+
+// ── Nexus Shop: Orders ──────────────────────────────────────────────────────
+let _allShopOrders = [];
+async function loadShopOrdersPage() {
+  const tbody = document.getElementById('shop-orders-tbody');
+  const info  = document.getElementById('so-load-info');
+  tbody.innerHTML = `<tr><td colspan="8" class="no-data">⏳ جارٍ التحميل...</td></tr>`;
+  info.textContent = '';
+  try {
+    const snap = await getDocs(query(collection(db,'shopOrders'), orderBy('createdAt','desc'), limit(500)));
+    _allShopOrders = snap.docs.map(d => ({ id:d.id, ...d.data() }));
+    const gymSel = document.getElementById('so-gym-filter');
+    const gyms = {};
+    _allShopOrders.forEach(o => { if (o.gymId && !gyms[o.gymId]) gyms[o.gymId] = o.gymId; });
+    gymSel.innerHTML = `<option value="all">كل الأندية</option>` +
+      Object.keys(gyms).map(id => `<option value="${id}">${esc(id)}</option>`).join('');
+    info.textContent = `${_allShopOrders.length} طلب محمّل`;
+    filterShopOrdersRender();
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="no-data" style="color:var(--red)">خطأ: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function filterShopOrdersRender() {
+  const tbody   = document.getElementById('shop-orders-tbody');
+  const search  = document.getElementById('so-search')?.value.toLowerCase() || '';
+  const gymF    = document.getElementById('so-gym-filter')?.value || 'all';
+  const statusF = document.getElementById('so-status-filter')?.value || 'all';
+  let list = _allShopOrders;
+  if (gymF !== 'all')    list = list.filter(o => o.gymId === gymF);
+  if (statusF !== 'all') list = list.filter(o => o.status === statusF);
+  if (search) list = list.filter(o =>
+    (o.buyerName||'').toLowerCase().includes(search) ||
+    (o.productName||'').toLowerCase().includes(search));
+
+  if (!list.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="no-data">لا توجد طلبات</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = list.map(o => {
+    const isPicked = o.status === 'picked_up';
+    return `
+    <tr>
+      <td><div class="td-name">${esc(o.buyerName||'—')}</div></td>
+      <td><span class="badge badge-gray">${esc(o.gymId||'—')}</span></td>
+      <td>${esc(o.productName||'—')}</td>
+      <td>${Number(o.quantity)||0}</td>
+      <td><span class="td-mono">${(Number(o.totalAmount)||0).toFixed(2)}</span></td>
+      <td><span class="badge ${isPicked?'badge-green':'badge-orange'}">${isPicked?'تم الاستلام':'بانتظار الاستلام'}</span>
+        ${o.stockIssue?'<div class="td-sub" style="color:var(--red)">⚠ تعارض مخزون</div>':''}
+      </td>
+      <td><span class="td-mono">${fmtDate(o.createdAt)}</span></td>
+      <td>${isPicked?'':`<button class="btn-add-blue" style="padding:5px 10px;font-size:13px" onclick="markOrderPickedUp('${o.id}')">✅ تأكيد الاستلام</button>`}</td>
+    </tr>`;
+  }).join('');
+}
+
+function markOrderPickedUp(orderId) {
+  updateDoc(doc(db,'shopOrders',orderId), {
+    status: 'picked_up',
+    pickedUpAt: serverTimestamp(),
+    pickedUpByUid: currentUser?.uid || '',
+    pickedUpByName: 'Super Admin (لوحة الويب)',
+  }).then(()=>{
+    showToast('✅ تم تأكيد الاستلام','success');
+    const o = _allShopOrders.find(x=>x.id===orderId);
+    if (o) o.status = 'picked_up';
+    filterShopOrdersRender();
+  }).catch(e=>showToast('❌ '+e.message,'error'));
+}
+
 document.getElementById('login-email').addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('login-pass').focus();});
 document.querySelectorAll('.modal-overlay').forEach(el=>{
   el.addEventListener('click',e=>{if(e.target===el)el.classList.remove('open');});
@@ -3338,6 +3667,16 @@ window.addPayment          = addPayment;
 window.loadInvoicesPage    = loadInvoicesPage;
 window.loadMessagesPage    = loadMessagesPage;
 window.loadPaymentsPage    = loadPaymentsPage;
+window.loadShopProductsPage   = loadShopProductsPage;
+window.openProductEditor      = openProductEditor;
+window.saveProduct            = saveProduct;
+window.toggleProductActive    = toggleProductActive;
+window.deleteProductConfirm   = deleteProductConfirm;
+window.onProductImageSelected = onProductImageSelected;
+window.removePeImage          = removePeImage;
+window.loadShopOrdersPage     = loadShopOrdersPage;
+window.filterShopOrdersRender = filterShopOrdersRender;
+window.markOrderPickedUp      = markOrderPickedUp;
 </script>
 
 <script>
